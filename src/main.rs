@@ -11,7 +11,7 @@ mod models;
 mod report;
 
 use dataset::YoloDataset;
-use detector::{Detector, DetectorConfig, ZeroShotDetector};
+use detector::{Detector, DetectorConfig, YoloDetector, ZeroShotDetector};
 use models::AuditResult;
 use report::{HtmlReporter, JsonReporter, Reporter};
 
@@ -172,23 +172,42 @@ fn run_validate(
 
     // Initialize detector
     println!();
-    println!("🔍 Initializing detector: {}", method);
+
+    // Get class names sorted by ID for the model
+    let mut model_class_names: Vec<String> = Vec::new();
+    let mut class_ids: Vec<i32> = dataset.class_names.keys().copied().collect();
+    class_ids.sort();
+    for id in class_ids {
+        model_class_names.push(dataset.class_names.get(&id).cloned().unwrap_or_default());
+    }
+
+    // Determine which method to use
+    let effective_method = if model_path.is_some() {
+        "yolo".to_string()
+    } else {
+        method.clone()
+    };
+
+    println!("🔍 Initializing detector: {}", effective_method);
     let config = DetectorConfig {
         confidence_threshold: confidence,
         iou_threshold,
-        model_path,
+        model_path: model_path.clone(),
     };
 
-    let detector: Box<dyn Detector + Sync> = match method.as_str() {
+    let detector: Box<dyn Detector + Sync> = match effective_method.as_str() {
+        "yolo" | "byom" => {
+            if config.model_path.is_none() {
+                anyhow::bail!("YOLO/BYOM method requires --model path to ONNX model");
+            }
+            Box::new(YoloDetector::new(config, model_class_names)?)
+        }
         "zero-shot" => Box::new(ZeroShotDetector::new(config)?),
         "vlm" => {
             println!("   VLM method requires GPU, checking...");
             anyhow::bail!("VLM method not yet implemented - coming soon");
         }
-        "byom" => {
-            anyhow::bail!("BYOM method requires --model path");
-        }
-        _ => anyhow::bail!("Unknown method: {}. Use: zero-shot, vlm, byom", method),
+        _ => anyhow::bail!("Unknown method: {}. Use: zero-shot, vlm, yolo", method),
     };
 
     // Set up parallelism
@@ -226,7 +245,7 @@ fn run_validate(
     // Build audit result
     let mut audit_result = AuditResult::new(
         dataset_path.to_string_lossy().to_string(),
-        method.clone(),
+        effective_method.clone(),
         confidence,
         iou_threshold,
         dataset.image_count(),
