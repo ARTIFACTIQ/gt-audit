@@ -18,7 +18,7 @@ use report::{HtmlReporter, JsonReporter, Reporter};
 #[derive(Parser)]
 #[command(name = "gt-audit")]
 #[command(author = "Artifactiq <hello@artifactiq.ai>")]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(about = "Fast ground truth label validation for object detection datasets")]
 struct Cli {
     #[command(subcommand)]

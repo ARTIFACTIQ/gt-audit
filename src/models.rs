@@ -172,6 +172,8 @@ pub struct AuditSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditResult {
+    pub generator: String,
+    pub generator_version: String,
     pub generated_at: String,
     pub dataset_path: String,
     pub method: String,
@@ -185,6 +187,9 @@ pub struct AuditResult {
     pub flagged_images: Vec<ImageResult>,
 }
 
+/// Version from Cargo.toml
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 impl AuditResult {
     pub fn new(
         dataset_path: String,
@@ -195,6 +200,8 @@ impl AuditResult {
         images_audited: usize,
     ) -> Self {
         Self {
+            generator: "gt-audit".to_string(),
+            generator_version: VERSION.to_string(),
             generated_at: chrono::Utc::now().to_rfc3339(),
             dataset_path,
             method,
