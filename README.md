@@ -1,50 +1,68 @@
 # gt-audit
 
-Automated ground truth label validation for object detection datasets.
+Fast ground truth label validation for object detection datasets. Written in Rust.
 
 **The problem:** Bad labels silently corrupt your ML metrics. Manual review doesn't scale.
 
-**The solution:** Use AI models to audit your labels. When the model disagrees with your ground truth, flag it for review.
+**The solution:** Use your trained model to audit labels. When the model disagrees with ground truth, flag it for review.
 
 ## Features
 
-- **Zero-shot detection** (CPU) - Grounding DINO + CLIP for robust validation without training
-- **Open VLM** (GPU) - LLaVA/InternVL for semantic understanding when GPU available
+- **Fast** - Rust + ONNX Runtime, processes 1000s of images per minute
 - **YOLO-native** - Works directly with YOLO format labels (class x y w h)
-- **CI/CD ready** - Exit codes, thresholds, JSON output for pipelines
-- **Standalone reports** - Single HTML file, no server needed
+- **Bring Your Own Model** - Use any ONNX model for validation
+- **CI/CD ready** - JSON output, exit codes for pipelines
+- **Single binary** - No Python, no dependencies
 
 ## Installation
 
+### Quick Install (Linux/macOS)
+
 ```bash
-pip install gt-audit
+curl -fsSL https://raw.githubusercontent.com/ARTIFACTIQ/gt-audit/main/install.sh | bash
 ```
 
-Or install from source:
+### From Releases
+
+Download from [GitHub Releases](https://github.com/ARTIFACTIQ/gt-audit/releases):
+
+```bash
+# Linux
+curl -LO https://github.com/ARTIFACTIQ/gt-audit/releases/latest/download/gt-audit-linux-x86_64.tar.gz
+tar -xzf gt-audit-linux-x86_64.tar.gz
+sudo mv gt-audit /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -LO https://github.com/ARTIFACTIQ/gt-audit/releases/latest/download/gt-audit-darwin-arm64.tar.gz
+tar -xzf gt-audit-darwin-arm64.tar.gz
+sudo mv gt-audit /usr/local/bin/
+```
+
+### Build from Source
 
 ```bash
 git clone https://github.com/ARTIFACTIQ/gt-audit.git
 cd gt-audit
-pip install -e .
+cargo build --release
 ```
 
 ## Quick Start
 
 ```bash
-# Validate a YOLO dataset (auto-selects best available method)
-gt-audit validate ./my-dataset
+# Validate dataset using your trained ONNX model
+gt-audit validate ./my-dataset --model ./model.onnx
 
-# Force CPU mode (zero-shot detection)
-gt-audit validate ./my-dataset --method zero-shot
+# Adjust confidence threshold
+gt-audit validate ./my-dataset --model ./model.onnx --confidence 0.3
 
-# Use VLM for deeper semantic analysis (requires GPU)
-gt-audit validate ./my-dataset --method vlm
+# Sample subset for quick check
+gt-audit validate ./my-dataset --model ./model.onnx --sample 100
+
+# Output to JSON file
+gt-audit validate ./my-dataset --model ./model.onnx --output audit.json
 
 # Generate HTML report
-gt-audit validate ./my-dataset --output report.html
-
-# CI mode: fail if too many issues
-gt-audit validate ./my-dataset --fail-on-high 5 --fail-on-medium 20
+gt-audit validate ./my-dataset --model ./model.onnx --output report.html
 ```
 
 ## Dataset Structure
@@ -54,71 +72,23 @@ gt-audit expects YOLO format:
 ```
 my-dataset/
 ├── images/
-│   ├── train/
-│   │   ├── image1.jpg
-│   │   └── image2.jpg
 │   └── val/
-│       └── image3.jpg
+│       ├── image1.jpg
+│       └── image2.jpg
 ├── labels/
-│   ├── train/
-│   │   ├── image1.txt    # class x y w h (normalized)
-│   │   └── image2.txt
 │   └── val/
-│       └── image3.txt
-└── dataset.yaml          # class names
+│       ├── image1.txt    # class x y w h (normalized)
+│       └── image2.txt
+└── dataset.yaml          # with 'names:' listing class names
 ```
 
-Or flat structure:
+Or with `classes.txt`:
 
 ```
 my-dataset/
-├── images/
-│   └── *.jpg
-├── labels/
-│   └── *.txt
+├── images/val/*.jpg
+├── labels/val/*.txt
 └── classes.txt           # one class name per line
-```
-
-## Detection Methods
-
-### Zero-Shot (CPU) - Default
-
-Uses Grounding DINO for detection + CLIP for class verification:
-
-```bash
-gt-audit validate ./dataset --method zero-shot
-```
-
-**How it works:**
-1. Grounding DINO detects objects using class names as text prompts
-2. CLIP verifies detected regions match the expected class
-3. Compares to GT labels, flags mismatches
-
-**Pros:** No training needed, works on CPU, robust
-**Cons:** Slower than trained models, may miss domain-specific classes
-
-### Open VLM (GPU)
-
-Uses LLaVA or InternVL for semantic understanding:
-
-```bash
-gt-audit validate ./dataset --method vlm --model llava-1.6
-```
-
-**How it works:**
-1. For each labeled region, asks VLM: "Is this a {class}?"
-2. VLM provides yes/no + explanation
-3. Flags disagreements with reasoning
-
-**Pros:** Best semantic understanding, explains why labels are wrong
-**Cons:** Requires GPU, slower, higher memory
-
-### BYOM (Bring Your Own Model)
-
-Use your own trained model:
-
-```bash
-gt-audit validate ./dataset --method byom --model ./my-model.pt
 ```
 
 ## Issue Types
@@ -126,167 +96,129 @@ gt-audit validate ./dataset --method byom --model ./my-model.pt
 | Type | Severity | Description |
 |------|----------|-------------|
 | `class_mismatch` | High | Model detects different class than GT label |
-| `missing_label` | Medium | Model detects object with no GT label |
-| `spurious_label` | Low | GT label exists but model detects nothing |
-| `localization` | Low | Box position/size significantly different |
+| `missing_label` | Medium | Model detects object with no GT label nearby |
+| `spurious_label` | Low | GT label exists but model detects nothing there |
 
-## Output Formats
+## Output Format
 
-### JSON (default)
-
-```bash
-gt-audit validate ./dataset --format json --output audit.json
-```
+### JSON
 
 ```json
 {
+  "generator": "gt-audit",
+  "generator_version": "0.2.0",
+  "generated_at": "2026-02-06T05:26:16Z",
+  "method": "yolo",
+  "confidence_threshold": 0.25,
   "summary": {
-    "total_images": 1000,
-    "images_with_issues": 45,
-    "issues_by_severity": {"high": 7, "medium": 23, "low": 156}
+    "total_images": 700,
+    "images_audited": 700,
+    "images_with_issues": 642,
+    "total_issues": 1905,
+    "by_severity": {"high": 148, "medium": 68, "low": 1689},
+    "by_type": {"class_mismatch": 148, "missing_label": 68, "spurious_label": 1689}
   },
-  "issues": [
-    {
-      "image": "image1.jpg",
-      "severity": "high",
-      "type": "class_mismatch",
-      "gt_class": "Boot",
-      "detected_class": "Dress",
-      "confidence": 0.92,
-      "explanation": "Image shows a floral dress, not footwear"
-    }
-  ]
+  "flagged_images": [...]
 }
 ```
 
-### HTML Report
+### Terminal Output
 
-```bash
-gt-audit validate ./dataset --format html --output report.html
 ```
+╔══════════════════════════════════════════════════════════╗
+║               gt-audit - Ground Truth Validator          ║
+╚══════════════════════════════════════════════════════════╝
 
-Generates a standalone HTML file with:
-- Summary statistics
-- Filterable issue list
-- Image previews
-- Click to expand details
+📂 Loading dataset: ./my-dataset
+   Classes: 39
+   Images: 700
 
-### CI Mode
+🔍 Initializing detector: yolo
+   Loading ONNX model: ./model.onnx
 
-```bash
-gt-audit validate ./dataset \
-  --fail-on-high 5 \
-  --fail-on-medium 20 \
-  --format json \
-  --output audit.json
+🔬 Auditing 700 images...
 
-echo $?  # Exit code: 0 = pass, 1 = fail
-```
+╔══════════════════════════════════════════════════════════╗
+║                      AUDIT SUMMARY                       ║
+╚══════════════════════════════════════════════════════════╝
 
-## Configuration
+  Total images:       700
+  Images audited:     700
+  Images with issues: 642
+  Total issues:       1905
 
-Create `gt-audit.yaml` in your dataset directory:
+  By severity:
+    🔴 High:   148
+    🟡 Medium: 68
+    ⚪ Low:    1689
 
-```yaml
-# Detection settings
-method: auto              # auto, zero-shot, vlm, byom
-confidence_threshold: 0.3
-iou_threshold: 0.5
-
-# Class equivalences (don't flag these as mismatches)
-class_groups:
-  - [Clothing, Dress, Suit, Jacket, Coat]
-  - [Footwear, Boot, Sandal, High heels]
-  - [Bag, Handbag, Backpack, Briefcase]
-
-# Sampling (for large datasets)
-sample_size: 1000         # 0 = all images
-sample_seed: 42
-
-# CI thresholds
-fail_on_high: 10
-fail_on_medium: 50
-```
-
-## Python API
-
-```python
-from gt_audit import Auditor
-
-# Initialize with auto-detected method
-auditor = Auditor(method="auto")
-
-# Validate dataset
-results = auditor.validate("./my-dataset")
-
-# Access results
-print(f"Issues found: {results.total_issues}")
-print(f"High severity: {results.high_count}")
-
-# Filter issues
-for issue in results.filter(severity="high"):
-    print(f"{issue.image}: {issue.gt_class} -> {issue.detected_class}")
-
-# Generate report
-results.to_html("report.html")
-results.to_json("audit.json")
+  Time: 45.2s
 ```
 
 ## GitHub Actions
 
 ```yaml
-name: Validate Ground Truth
+name: GT Audit
 
-on: [push, pull_request]
+on:
+  release:
+    types: [published]
 
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          lfs: true
 
-      - name: Install gt-audit
-        run: pip install gt-audit
+      - name: Download gt-audit
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/ARTIFACTIQ/gt-audit/main/install.sh | bash
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Export model to ONNX
+        run: |
+          pip install ultralytics torch --index-url https://download.pytorch.org/whl/cpu
+          python -c "from ultralytics import YOLO; YOLO('model.pt').export(format='onnx')"
 
       - name: Run audit
-        run: |
-          gt-audit validate ./data \
-            --fail-on-high 5 \
-            --format json \
-            --output audit.json
+        run: gt-audit validate . --model model.onnx --output audit.json
 
       - name: Upload report
         uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: gt-audit-report
           path: audit.json
 ```
 
+## CLI Reference
+
+```
+gt-audit validate <DATASET> [OPTIONS]
+
+Arguments:
+  <DATASET>  Path to dataset (YOLO format)
+
+Options:
+  -m, --model <PATH>       Path to ONNX model
+  -c, --confidence <FLOAT> Confidence threshold [default: 0.25]
+      --iou <FLOAT>        IoU threshold for matching [default: 0.5]
+  -o, --output <PATH>      Output file (json or html based on extension)
+      --sample <N>         Sample N images (0 = all) [default: 0]
+      --seed <N>           Random seed for sampling [default: 42]
+  -h, --help               Print help
+  -V, --version            Print version
+```
+
 ## Requirements
 
-- Python 3.9+
-- For zero-shot: ~4GB disk (model downloads)
-- For VLM: NVIDIA GPU with 8GB+ VRAM
+- Linux x86_64 or macOS ARM64
+- ONNX model exported from YOLOv8/v11
 
 ## License
 
 MIT License - see [LICENSE](LICENSE)
-
-## Contributing
-
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md)
-
-## Related Projects
-
-- [ml-gpu](https://github.com/ARTIFACTIQ/mlgpu) - GPU setup for ML training
-- [cleanlab](https://github.com/cleanlab/cleanlab) - General data quality
-- [FiftyOne](https://github.com/voxel51/fiftyone) - Dataset visualization
 
 ---
 
